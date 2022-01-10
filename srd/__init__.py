@@ -47,7 +47,11 @@ def generateMeta(path, pageid=None):
 
     rsrcmgr = PDFResourceManager()
     laparams = LAParams()
-    device = PDFPageDetailedAggregator(rsrcmgr, laparams=laparams)
+    device = PDFPageDetailedAggregator(
+        rsrcmgr,
+        laparams=laparams,
+        colStarts=[57.6, 328.56],
+    )
     interpreter = PDFPageInterpreter(rsrcmgr, device)
 
     for page in PDFPage.create_pages(doc):
