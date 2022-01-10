@@ -127,3 +127,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+/srd/monsters.csv
+/srd/monsters.json
+/srd/.~lock.monsters.csv#
+/srd/monsters.ods
+/srd/.~lock.monsters.ods#
