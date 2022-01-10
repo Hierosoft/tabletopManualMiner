@@ -56,13 +56,21 @@ def generateMeta(path, pageid=None):
 
     for page in PDFPage.create_pages(doc):
         if (pageid is None) or (pageid==page.pageid):
-            # print("page: {}".format(dir(page)))
+            print("page: {}".format(dir(page)))
             interpreter.process_page(page)
             device.get_result()  # receive LTPage (runs receive_layout)
             if pageid is not None:
                 break
 
-    pprint(device.rows)
+    # pprint(device.rows)
+    UNKNOWN = 0
+    MONSTERS = 1
+    context = MONSTERS
+    for frag in device.frags:
+        if "Monsters (A)" in frag.text:
+            context = MONSTERS
+            print("Found Monsters: {}".format(frag.text))
+        print(frag.text)
 
 
 def main():

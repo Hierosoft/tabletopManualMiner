@@ -14,6 +14,29 @@ except ModuleNotFoundError:
     prerr("  pdfminer")
     exit(1)
 
+
+class BBox:
+    def __init__(self, bbox):
+        """
+        bbox: tuple of (x1, x1, x2, y2)
+        """
+        self.x1 = bbox[0]
+        self.y1 = bbox[1]
+        self.x2 = bbox[2]
+        self.y2 = bbox[3]
+
+
+class DocFragment:
+    def __init__(self, pageid, column, bbox, text):
+        """
+        bbox: (x1, y1, x2, y2)
+        """
+        self.pageid = pageid
+        self.column = column
+        self.bbox = BBox(bbox)
+        self.text = text
+
+
 class PDFPageDetailedAggregator(PDFPageAggregator):
     """
     This class is based on PDFPageDetailedAggregator from
@@ -27,7 +50,7 @@ class PDFPageDetailedAggregator(PDFPageAggregator):
     def __init__(self, rsrcmgr, pageno=1, laparams=None,
                  colStarts=None):
         PDFPageAggregator.__init__(self, rsrcmgr, pageno=pageno, laparams=laparams)
-        self.rows = []
+        self.frags = []
         self.colStarts = colStarts
         if self.colStarts is not None:
             print("columns: {}".format(len(self.colStarts)))
@@ -59,15 +82,17 @@ class PDFPageDetailedAggregator(PDFPageAggregator):
                     else:
                         raise ValueError("Only a list of length 1 (same as None) or 2"
                                          " is implemented for \"colStarts\".")
-                    row = (page_number, col, item.bbox[0], item.bbox[1], item.bbox[2], item.bbox[3], child_str)
-                    # ^ bbox: (x1, y1, x2, y2)
-                    # ^ row: (pageid, x1, y1, x2, y2, child_str)
-                    #         0       1   2   3   4   5
-                    self.rows.append(row)
+                    frag = DocFragment(
+                        page_number,
+                        col,
+                        item.bbox,
+                        child_str,
+                    )
+                    self.frags.append(frag)
                 for child in item:
                     render(child, page_number)
             return
         render(ltpage, self.page_number)
         self.page_number += 1
-        self.rows = sorted(self.rows, key = lambda r: (r[0], r[1], -r[2]))
+        self.frags = sorted(self.frags, key = lambda f: (f.pageid, f.column, -f.bbox.y1))
         self.result = ltpage
