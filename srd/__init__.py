@@ -14,7 +14,7 @@ def prerr(msg):
     sys.stderr.write("{}\n".format(msg))
     sys.stderr.flush()
 
-from srd.pdfdetails import (
+from srd.minetext import (
     PDFPageDetailedAggregator,
     DocChunk,
 )
