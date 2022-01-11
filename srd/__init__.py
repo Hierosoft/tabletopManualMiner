@@ -14,28 +14,6 @@ def prerr(msg):
     sys.stderr.write("{}\n".format(msg))
     sys.stderr.flush()
 
-from srd.minetext import (
-    PDFPageDetailedAggregator,
-    DocChunk,
-)
-
-try:
-    from pprint import pprint
-    from pdfminer.pdfparser import PDFParser
-    from pdfminer.pdfdocument import PDFDocument
-    from pdfminer.pdfpage import PDFPage
-    from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
-    from pdfminer.layout import LAParams
-except ModuleNotFoundError:
-    prerr("You must first install the following module for Python:")
-    prerr("  pdfminer")
-    exit(1)
-
-from io import (
-    StringIO,
-    BufferedWriter,
-)
-
 alphabetUpper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 profile = None
@@ -55,9 +33,23 @@ chunksPath = os.path.join(dataPath, chunksName)
 indent = ""
 
 
+nonSimpleTypeNames = ['builtin_function_or_method', 'method']
+
+
+def assertPlainDict(d):
+    for k,v in d.items():
+        if type(v).__name__ in nonSimpleTypeNames:
+            prerr()
+            prerr("Bad dict item ({} is a {}):"
+                  "".format(k, type(v).__name__))
+            for k,v in d.items():
+                prerr("{}: {}".format(k, v))
+            raise ValueError("^ not a plain dict")
+
+
 def dented(s):
     '''
-    Replace \n with \n + the global indent.
+    Replace \n with \n+indent (the global indent).
     '''
     if s is None:
         return None
@@ -66,7 +58,7 @@ def dented(s):
 
 def pdent(msg):
     '''
-    print, but indent using the global 'indent'.
+    Write msg+newline to stdout but indent using the global 'indent'.
     '''
     sys.stdout.write("{}{}\n".format(indent, dented(msg)))
     sys.stdout.flush()
@@ -74,27 +66,10 @@ def pdent(msg):
 
 def edent(msg):
     '''
-    write to stderr, but indent using the global 'indent'.
+    Write msg+newline to stderr but indent using the global 'indent'.
     '''
     sys.stderr.write("{}{}\n".format(indent, dented(msg)))
     sys.stderr.flush()
-
-
-def setAllPageNumbers(device, pageid, pageNumberStr):
-    pageN = None
-    try:
-        pageN = int(pageNumberStr)
-    except ValueError as ex:
-        raise ValueError("WARNING: The page number for page id"
-                         " {} is unknown since the last text"
-                         " on the page is not an integer:"
-                         " \"{}\""
-                         "".format(pageid, pageNumberStr))
-        return
-
-    for chunk in device.chunks:
-        if chunk.pageid == pageid:
-            chunk.pageN = pageN
 
 
 def noParens(s):
@@ -122,26 +97,220 @@ def objDict(o):
         if k.startswith("__"):
             continue
         v = getattr(o, k)
-        if isinstance(v, BufferedWriter):
+        if type(v).__name__ in nonSimpleTypeNames:
             continue
         result[k] = v
     return result
-
-
-def ltannoDict(ltanno):
-    return objDict(ltanno)
 
 
 def objDump(cls):
     return "{}".format(objDict(cls))
 
 
-def chunkDict(chunk):
+def chunkToDict(chunk):
     return chunk.toDict()
 
 
+def clean_frag_text(text):
+    # It may be odd like:
+    # "around \r  the \r  bend" (not actual example but spacing is)
+    # Therefore:
+    return " ".join(text.split()).strip()
+    # ^ (strip with no param automatically uses any group of
+    #    whitespaces as a single delimiter)
+
+
+def clean_frag(frag):
+    frag['text'] = clean_frag_text(frag['text'])
+
+
+def same_style(frag1, frag2):
+    """
+    Is same fontname and size.
+    """
+    ffn = frag2['fontname']
+    ffs = frag2['size']
+    return (ffs == frag1['size']) and (ffn == frag1['fontname'])
+
+
+def frag_dict(text, fontname, size):
+    return {
+        'text': text,
+        'fontname': fontname,
+        'size': size,
+    }
+
+
+class DocChunk:
+    def __init__(self, pageid, column, bbox, text, fontName=None,
+                 fontSize=None, fragments=None, annotations=None):
+        """
+        Sequential arguments:
+        bbox -- The bounding box of the text in cartesian coordinates
+            (larger is further toward the top of the document) in the
+            format (x1, y1, x2, y2).
+
+        Keyword arguments:
+        fontName -- Only set if all fragments have same fontname.
+        fontSize -- Only set if all fragments have same font size.
+        fragments -- frag_dict representing parts of the chunk
+            (usually words) that differ in font size or font name.
+        annotations -- LTAnno objects (defined in pdfminer.layout)
+        """
+        self.pageid = pageid
+        self.column = column
+        self.bbox = BBox(bbox)
+        self.text = text
+        self.fontSize = fontSize
+        self.fontName = fontName
+        self.fragments = fragments
+        self.annotations = annotations
+
+        self.pageN = None  # Set this later based on the visible number.
+
+    @staticmethod
+    def fromDict(d):
+        pageid = d['pageid']
+        column = d['column']
+        bbox = d['bbox']  # bbox is a list or tuple at this point.
+        text = d['text']
+        fontName = d['fontname']
+        fontSize = d['size']
+        fragments = d['fragments']
+        annotations = d['annotations']
+        chunk = DocChunk(pageid, column, bbox, text, fontName=fontName,
+                         fontSize=fontSize, fragments=fragments,
+                         annotations=annotations)
+        chunk.pageN = d.get("pageN")
+        return chunk
+
+    def toDict(self):
+        return {
+            'text': self.text,
+            'page': self.pageN,
+            'pageid': self.pageid,
+            'pageN': self.pageN,
+            'fontname': self.fontName,
+            'size': self.fontSize,
+            'bbox': self.bbox.toTuple(),
+            'column': self.column,
+            'fragments': self.fragments,
+            'annotations': self.annotations,
+        }
+
+
+    def groupFragments(self):
+        """
+        Combine fragments that are in a row and share the same fontname
+        and size.
+        """
+        fragments = []
+        thisFrag = None
+        for fragment in self.fragments:
+            if (thisFrag is None) or (not same_style(fragment, thisFrag)):
+                if thisFrag is not None:
+                    # Append the finished fragment.
+                    clean_frag(thisFrag)
+                    fragments.append(thisFrag)
+                thisFrag = frag_dict(
+                    fragment['text'],
+                    fragment['fontname'],
+                    fragment['size'],
+                )
+            else:
+                thisFrag['text'] += fragment['text']
+
+        if thisFrag is not None:
+            # Append the last fragment.
+            clean_frag(thisFrag)
+            fragments.append(thisFrag)
+        self.fragments = fragments
+
+    def oneStyle(self, fontname, size, decimalPlaces=2, index=None):
+        """
+        The DocChunk only has one fragment (or you specified index)
+        and it is in the specified style.
+
+        Keyword arguments:
+        decimalPlaces -- Round sizes to the given number of decimal
+            places before comparing them.
+        index -- Check only at this index (allows fragments to contain
+            more than one fragment).
+        """
+        if index is None:
+            if len(self.fragments) != 1:
+                return False
+            index = 0
+        frag = self.fragments[index]
+        fSize = round(frag['size'], decimalPlaces)
+        size = round(size, decimalPlaces)
+        '''
+        if size != fSize:
+            print("size {} != {}".format(fSize, size))
+        if fontname != frag['fontname']:
+            print("fontname {} is not {}"
+                  "".format(frag['fontname'], fontname))
+        '''
+        return (frag['fontname'] == fontname) and (fSize == size)
+
+    def startStyle(self, fontname, size, decimalPlaces=2):
+        return self.oneStyle(
+            fontname,
+            size,
+            decimalPlaces=decimalPlaces,
+            index=0,
+        )
+
+
+class BBox:
+    def __init__(self, bbox):
+        """
+        bbox: tuple of (x1, x1, x2, y2)
+        """
+        self.x1 = bbox[0]
+        self.y1 = bbox[1]
+        self.x2 = bbox[2]
+        self.y2 = bbox[3]
+
+    def toTuple(self):
+        return (self.x1, self.y1, self.x2, self.y2)
+
+
 def dictToChunk(chunkD):
-    return DocChunk.fromDict(chunkD)
+    # return DocChunk.fromDict(chunkD)
+    # ^ Commented so pageaggregator and hence pdfminer isn't required
+    #   unless chunks.json is not generated yet.
+
+    pageid = chunkD['pageid']
+    column = chunkD['column']
+    bbox = chunkD['bbox']
+    text = chunkD['text']
+    fontName = chunkD.get('fontname')
+    fontSize = chunkD.get('size')
+    fragments = chunkD['fragments']
+    annotations = chunkD['annotations']
+
+    chunk = DocChunk(
+        pageid,
+        column,
+        bbox,
+        text,
+        fontName=fontName,
+        fontSize=fontSize,
+        fragments=fragments,
+        annotations=annotations,
+    )
+
+    for k,v in chunkD.items():
+        if not hasattr(chunk, k):
+            # If not already handled above
+            setattr(chunk, k, v)
+    '''
+    chunk.pageN = chunkD['page']
+    chunk.fragments = chunkD['fragments']
+    chunk.annotations = chunkD['annotations']
+    '''
+    return chunk
 
 
 def ltannoDump(ltanno):
@@ -155,7 +324,10 @@ def ltannosDump(ltannos):
     result = "["
     delim = ""
     for ltanno in ltannos:
-        result += delim + ltannoDump(ltanno)
+        if isinstance(ltanno, dict):
+            result += delim + json.dumps(ltanno)
+        else:
+            result += delim + ltannoDump(ltanno)
         delim = ", "
     result += "]"
     return result
@@ -163,6 +335,8 @@ def ltannosDump(ltannos):
 
 def chunkDump(chunk):
     if not hasattr(chunk, 'text'):
+        # sys.stderr.write("chunkDump is converting a non-chunk...")
+        # sys.stderr.flush()
         chunk = dictToChunk(chunk)
     return ("\"{}\" p. {} pageid={} font={} size={} annotations={}"
             "".format(chunk.text, chunk.pageN, chunk.pageid,
@@ -244,81 +418,6 @@ def splitNotInParens(s, delimiters=" \r\n\t", pairs=[('(', ')'),]):
             result += c
     results.append(result)
     return results
-
-
-def generateMeta(path, pageid=None, colStarts=None, max_pageid=None):
-    '''
-    This function is based on code from
-    lindblandro's Oct 4 '13 at 10:33 answer
-    edited by slushy Feb 4 '14 at 23:41
-    at <https://stackoverflow.com/a/19179114>
-    on <https://stackoverflow.com/questions/15737806/extract-text-using-
-    pdfminer-and-pypdf2-merges-columns>.
-    '''
-    global indent
-    fp = open(path, 'rb')
-    parser = PDFParser(fp)
-    doc = PDFDocument(parser)
-    # doc.initialize('password')  # leave empty for no password
-
-    rsrcmgr = PDFResourceManager()
-    laparams = LAParams()
-    device = PDFPageDetailedAggregator(
-        rsrcmgr,
-        laparams=laparams,
-        colStarts=colStarts,
-    )
-    interpreter = PDFPageInterpreter(rsrcmgr, device)
-
-    UNKNOWN = 0
-    CONTEXT_MONSTERS = 1
-    CONTEXT_APPENDIX_A = 2
-
-    for page in PDFPage.create_pages(doc):
-        if (pageid is None) or (pageid==page.pageid):
-            # print("page: {}".format(dir(page)))
-            # ^ page: ['INHERITABLE_ATTRS', '__class__', '__delattr__', '__dict__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__', '__getattribute__', '__gt__', '__hash__', '__init__', '__init_subclass__', '__le__', '__lt__', '__module__', '__ne__', '__new__', '__reduce__', '__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__', '__weakref__', 'annots', 'attrs', 'beads', 'contents', 'create_pages', 'cropbox', 'debug', 'doc', 'get_pages', 'lastmod', 'mediabox', 'pageid', 'resources', 'rotate']
-            progressTotalStr = ""
-            percentStr = ""
-            if max_pageid is not None:
-                progressTotalStr = "/" + str(max_pageid)
-                percent = float(page.pageid) / float(max_pageid) * 100
-                percentStr = " ({}%)".format(int(percent))
-                sys.stderr.write("\r")  # overwrite
-            sys.stderr.write("Reading pageid {}{}{}    "
-                             "".format(page.pageid, progressTotalStr,
-                                       percentStr))
-            sys.stderr.flush()
-            interpreter.process_page(page)
-            device.get_result()  # receive LTPage (runs receive_layout)
-            # NOTE: There is no point in iterating chunks here,
-            # because the list stored in device.chunks will grow on each
-            # iteration and the page numbers are not distinguished yet.
-            if pageid is not None:
-                break
-    sys.stderr.write("\n")
-    sys.stderr.flush()
-
-    # pprint(device.rows)
-    prevChunk = None
-    pageN = None
-
-    for chunk in device.chunks:
-        if prevChunk is not None:
-            if prevChunk.pageid != chunk.pageid:
-                setAllPageNumbers(device, prevChunk.pageid,
-                                  prevChunk.text)
-                # Assume that the last text on the page is the (visible)
-                # page number if it is a number.
-                # print("page {} ended with {}"
-                #       "".format(prevChunk.pageid, prevChunk.text))
-                # ^ usually the page number is 1 higher than the pageid.
-        prevChunk = chunk
-
-    if prevChunk is not None:
-        setAllPageNumbers(device, prevChunk.pageid, prevChunk.text)
-
-    return device.chunks
 
 
 def processChunks(chunks):
@@ -599,6 +698,8 @@ def processChunks(chunks):
     monsters = sorted(monsters, key = lambda o: o['CR'])
     for monster in monsters:
         monster['CR'] = floatToFraction(monster['CR'])
+    for monster in monsters:
+        assertPlainDict(monster)
     with open(jsonPath, 'w') as outs:
         json.dump(monsters, outs, indent=2)  # sort_keys=True)
         # If there are errors, ensure only simple types not classes are
@@ -652,7 +753,8 @@ def main():
                 chunk = chunks[i]
                 chunks[i] = dictToChunk(chunk)
     if chunks is None:
-        chunks = generateMeta(
+        from srd.pagechunker import generateChunks
+        chunks = generateChunks(
             srcPath,
             pageid=None,
             colStarts=[57.6, 328.56],
@@ -660,7 +762,7 @@ def main():
         )
         for i in range(len(chunks)):
             chunk = chunks[i]
-            chunks[i] = chunkDict(chunk)
+            chunks[i] = chunkToDict(chunk)
         # pre-save test:
         for chunk in chunks:
             print("* testing conversion of chunk {}"

@@ -10,7 +10,8 @@ try:
     from pdfminer.converter import PDFPageAggregator
     from pdfminer.layout import LTPage, LTChar, LTAnno, LAParams, LTTextBox, LTTextLine
 except ModuleNotFoundError:
-    prerr("You must first install the following module for Python:")
+    prerr("To use the aggregator (required for generating chunks.json)"
+          " you must first install the following module for Python:")
     prerr("  pdfminer")
     exit(1)
 
@@ -21,74 +22,19 @@ except NameError:
     pass
 
 # TODO:
-'''
 from srd import (
     objDict,
-    ltannoDict,
+    BBox,
+    DocChunk,
+    clean_frag_text,
+    clean_frag,
+    same_style,
+    frag_dict,
 )
-'''
-
-nonDataTypeNames = ['builtin_function_or_method', 'method']
-
-
-def objDict(o):
-    result = {}
-    for k in dir(o):
-        if k.startswith("__"):
-            continue
-        v = getattr(o, k)
-        if type(v).__name__ in nonDataTypeNames:
-            continue
-        result[k] = v
-    return result
 
 
 def ltannoDict(ltanno):
     return objDict(ltanno)
-
-
-class BBox:
-    def __init__(self, bbox):
-        """
-        bbox: tuple of (x1, x1, x2, y2)
-        """
-        self.x1 = bbox[0]
-        self.y1 = bbox[1]
-        self.x2 = bbox[2]
-        self.y2 = bbox[3]
-
-    def toTuple(self):
-        return (self.x1, self.y1, self.x2, self.y2)
-
-
-def clean_frag_text(text):
-    # It may be odd like:
-    # "around \r  the \r  bend" (not actual example but spacing is)
-    # Therefore:
-    return " ".join(text.split()).strip()
-    # ^ (strip with no param automatically uses any group of
-    #    whitespaces as a single delimiter)
-
-
-def clean_frag(frag):
-    frag['text'] = clean_frag_text(frag['text'])
-
-
-def same_style(frag1, frag2):
-    """
-    Is same fontname and size.
-    """
-    ffn = frag2['fontname']
-    ffs = frag2['size']
-    return (ffs == frag1['size']) and (ffn == frag1['fontname'])
-
-
-def frag_dict(text, fontname, size):
-    return {
-        'text': text,
-        'fontname': fontname,
-        'size': size,
-    }
 
 
 '''
@@ -109,125 +55,6 @@ class DocFragment:
     def clean(self):
         self.text = clean_frag_text(self.text)
 '''
-
-
-class DocChunk:
-    def __init__(self, pageid, column, bbox, text, fontName=None,
-                 fontSize=None, fragments=None, annotations=None):
-        """
-        Sequential arguments:
-        bbox -- The bounding box of the text in cartesian coordinates
-            (larger is further toward the top of the document) in the
-            format (x1, y1, x2, y2).
-
-        Keyword arguments:
-        fontName -- Only set if all fragments have same fontname.
-        fontSize -- Only set if all fragments have same font size.
-        fragments -- frag_dict representing parts of the chunk
-            (usually words) that differ in font size or font name.
-        annotations -- LTAnno objects (defined in pdfminer.layout)
-        """
-        self.pageid = pageid
-        self.column = column
-        self.bbox = BBox(bbox)
-        self.text = text
-        self.fontSize = fontSize
-        self.fontName = fontName
-        self.fragments = fragments
-        self.annotations = annotations
-
-        self.pageN = None  # Set this later based on the visible number.
-
-    @staticmethod
-    def fromDict(d):
-        pageid = d['pageid']
-        column = d['column']
-        bbox = d['bbox']  # bbox is a list or tuple at this point.
-        text = d['text']
-        fontName = d['fontname']
-        fontSize = d['size']
-        fragments = d['fragments']
-        annotations = d['annotations']
-        chunk = DocChunk(pageid, column, bbox, text, fontName=fontName,
-                         fontSize=fontSize, fragments=fragments,
-                         annotations=annotations)
-        return chunk
-
-    def toDict(self):
-        return {
-            'text': self.text,
-            'page': self.pageN,
-            'pageid': self.pageid,
-            'fontname': self.fontName,
-            'size': self.fontSize,
-            'bbox': self.bbox.toTuple(),
-            'column': self.column,
-            'fragments': self.fragments,
-            'annotations': self.annotations,
-        }
-
-
-    def groupFragments(self):
-        """
-        Combine fragments that are in a row and share the same fontname
-        and size.
-        """
-        fragments = []
-        thisFrag = None
-        for fragment in self.fragments:
-            if (thisFrag is None) or (not same_style(fragment, thisFrag)):
-                if thisFrag is not None:
-                    # Append the finished fragment.
-                    clean_frag(thisFrag)
-                    fragments.append(thisFrag)
-                thisFrag = frag_dict(
-                    fragment['text'],
-                    fragment['fontname'],
-                    fragment['size'],
-                )
-            else:
-                thisFrag['text'] += fragment['text']
-
-        if thisFrag is not None:
-            # Append the last fragment.
-            clean_frag(thisFrag)
-            fragments.append(thisFrag)
-        self.fragments = fragments
-
-    def oneStyle(self, fontname, size, decimalPlaces=2, index=None):
-        """
-        The DocChunk only has one fragment (or you specified index)
-        and it is in the specified style.
-
-        Keyword arguments:
-        decimalPlaces -- Round sizes to the given number of decimal
-            places before comparing them.
-        index -- Check only at this index (allows fragments to contain
-            more than one fragment).
-        """
-        if index is None:
-            if len(self.fragments) != 1:
-                return False
-            index = 0
-        frag = self.fragments[index]
-        fSize = round(frag['size'], decimalPlaces)
-        size = round(size, decimalPlaces)
-        '''
-        if size != fSize:
-            print("size {} != {}".format(fSize, size))
-        if fontname != frag['fontname']:
-            print("fontname {} is not {}"
-                  "".format(frag['fontname'], fontname))
-        '''
-        return (frag['fontname'] == fontname) and (fSize == size)
-
-    def startStyle(self, fontname, size, decimalPlaces=2):
-        return self.oneStyle(
-            fontname,
-            size,
-            decimalPlaces=decimalPlaces,
-            index=0,
-        )
 
 
 class PDFPageDetailedAggregator(PDFPageAggregator):
