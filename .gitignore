@@ -127,8 +127,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-/srd/monsters.csv
-/srd/monsters.json
-/srd/.~lock.monsters.csv#
-/srd/monsters.ods
-/srd/.~lock.monsters.ods#
+
+# Project-specific files
+/srd/data/creatures.csv
+/srd/data/creatures.json
+/srd/data/.~lock.creatures.csv#
+/srd/data/creatures.ods
+/srd/data/.~lock.creatures.ods#
+/out.txt
+/srd/data/chunks.json
