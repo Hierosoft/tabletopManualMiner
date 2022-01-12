@@ -31,10 +31,47 @@ if not os.path.isdir(dataPath):
 chunksName = "chunks.json"
 chunksPath = os.path.join(dataPath, chunksName)
 indent = ""
-
-
 nonSimpleTypeNames = ['builtin_function_or_method', 'method']
 
+'''
+Anything heading with the same style as a subcategory but is on one of
+the following pages is not a subcategory but still ends the previous
+subcategory (Use page numbers instead of strings to avoid license
+infringement):
+'''
+nonSubcategoryPages = [320, 395]
+
+'''
+A value in subcatEndStrings changes the subcategory of the current
+creature to None if the current creature is under the subcategory
+specified in the key--Handle situations where the subcategory ends
+without warning (The next creature is even in alphabetical order of the
+creature names in the subcategory by chance even though the
+alphabetical order actually escaped the nested list of subcategorized
+creatures and the creature name is there because it comes after the
+previous subcategory):
+'''
+subcatEndStrings = {
+    'Animated Objects': 'monstrosity,',
+    'Dinosaurs': 'monstrosity (',
+    'Dragons, Metallic': 'monstrosity,',
+    'Elementals': 'humanoid (',
+    'Genies': 'undead,',
+    'Giants': 'aberration,',
+    'Golems': 'monstrosity,',
+    'Skeletons': 'chaotic evil',
+    'Sphinxes': 'fey,',
+}
+
+'''
+The first creature on each of the following pages sets the subcategory
+to None (Use page numbers instead of strings to avoid license
+infringement):
+'''
+subcatEndPages = [332, 336, 339]
+doneSubcatEndPages = {}
+for n in subcatEndPages:
+    doneSubcatEndPages[n] = False
 
 def assertPlainDict(d):
     for k,v in d.items():
@@ -187,7 +224,6 @@ class DocChunk:
     def toDict(self):
         return {
             'text': self.text,
-            'page': self.pageN,
             'pageid': self.pageid,
             'pageN': self.pageN,
             'fontname': self.fontName,
@@ -300,13 +336,14 @@ def dictToChunk(chunkD):
         fragments=fragments,
         annotations=annotations,
     )
+    chunk.pageN = chunkD['pageN']
+    # ^ The code below doesn't fix it since it is None not missing!
 
     for k,v in chunkD.items():
         if not hasattr(chunk, k):
             # If not already handled above
             setattr(chunk, k, v)
     '''
-    chunk.pageN = chunkD['page']
     chunk.fragments = chunkD['fragments']
     chunk.annotations = chunkD['annotations']
     '''
@@ -367,7 +404,16 @@ def floatToFraction(f):
     return str(parts[0]) + "/" + str(parts[1])
 
 
-def unitStrToPair(s, debugTB=None, allowInt=False):
+def replaceMultiple(s, needles, newStr):
+    '''
+    Replace every needle in needles with newStr.
+    '''
+    for needle in needles:
+        s = s.replace(needles, newStr)
+    return s
+
+
+def unitStrToPair(s, debugTB=None, allowInt=False, ignores=","):
     '''
     Convert a string like "100 XP" or "1 ft" to a tuple of (int,str).
     '''
@@ -377,9 +423,11 @@ def unitStrToPair(s, debugTB=None, allowInt=False):
         v = None
         if allowInt:
             try:
-                v = int(vStr)
+                v = int(replaceMultiple(vStr, ignores, ""))
             except ValueError:
-                v = float(vStr)
+                v = float(replaceMultiple(vStr, ignores, ""))
+        else:
+            v = float(replaceMultiple(vStr, ignores, ""))
         return v, parts[1]
     # elif len(parts) == 1:
     #     return int(s)
@@ -541,6 +589,40 @@ def processChunks(chunks):
         prevStatName = None
         if context in creatureTypes:
             subContext = None
+            for endSC, ender in subcatEndStrings.items():
+                '''
+                See the comment at the subcatEndStrings declaration for
+                why this loop exists.
+                '''
+                if endSC != subcategory:
+                    if ender in chunk.text:
+                        creatureMsg = ""
+                        if monster is not None:
+                            creatureMsg = " for " + monster[NameHeader]
+                        '''
+                        pdent("Not ending Subcategory since {}"
+                              " was found{} but in {} not {}"
+                              "".format(ender, creatureMsg, subcategory,
+                                        endSC))
+                        '''
+                    continue
+                '''
+                pdent("Checking for subcategory ender {} in {}"
+                      "".format(ender, chunk.text))
+                '''
+                indent = "  "
+                if ender in chunk.text:
+                    pdent("End Subcategory since {} was found in {}"
+                          "".format(ender, subcategory))
+                    if monster is not None:
+                        monster[SubCategoryHeader] = None
+                        '''
+                        Do NOT end the creature. Rather than a category
+                        (which would end a creature), ender may just be
+                        a property that indicates the creature has no
+                        category.
+                        '''
+                    subcategory = None
             if statName is not None:
                 # such as Challenge
                 # font: 'LUFRKP+Calibri' 13.116719999999987
@@ -578,30 +660,49 @@ def processChunks(chunks):
                 # ClassName (Creature, NPC, or Monster name):
                 if monster is not None:
                     monsters.append(monster)
+                if chunk.pageN in subcatEndPages:
+                    subcategory = None
                 monster = {
                     NameHeader: chunk.text,
                     ContextHeader: context,
                     SubCategoryHeader: subcategory,
+                    'pageN': chunk.pageN,
                 }
                 subContext = NameHeader
                 indent = "    "
                 pdent("Name {}:".format(monster[NameHeader].strip()))
-            elif chunk.oneStyle('DXJJCX+GillSans-SemiBold', 16.60656):
+            elif (chunk.oneStyle('DXJJCX+GillSans-SemiBold', 16.60656)
+                  and (chunk.pageN not in nonSubcategoryPages)):
+                '''
+                NOTE: A monster can end with a category name,
+                subcategory name (this case), or heading equivalent to
+                subcategory (below), so see all instances of
+                monsters.append for other examples of creature endings.
+                '''
                 # Monster type subsection
                 if monster is not None:
                     monsters.append(monster)
                     monster = None
                 indent = "  "
-                pdent("Subcategory {}.{}"
-                      "".format(context, chunk.text))
-                for frag in chunk.fragments:
-                    pdent("- \"{}\"".format(frag['text']))
-                    pdent("  font: '{}' {}"
-                          "".format(frag['fontname'], frag['size']))
-                monster = None
-                subcategory = chunk.text
-                # NOTE: A monster can end with a category name too
-                # (See endIsComplete)!
+                if chunk.pageN not in nonSubcategoryPages:
+                    pdent("Subcategory {}.{}"
+                          "".format(context, chunkDump(chunk)))
+                    for frag in chunk.fragments:
+                        pdent("- \"{}\"".format(frag['text']))
+                        pdent("  font: '{}' {}"
+                              "".format(frag['fontname'], frag['size']))
+                    monster = None
+                    subcategory = chunk.text
+            elif chunk.oneStyle('DXJJCX+GillSans-SemiBold', 16.60656):
+                '''
+                It is in nonSubcategoryPages (because the previous
+                elif wasn't the case) so end the previous
+                subcategory without starting a new one.
+                '''
+                if monster is not None:
+                    monsters.append(monster)
+                    monster = None
+                subcategory = None
             elif chunk.startStyle('WWROEK+Calibri-Bold', 13.2348):
                 # 13.234800000000064
                 # Stat
@@ -630,7 +731,13 @@ def processChunks(chunks):
                             pdent("    font: '{}' {}"
                                   "".format(frag['fontname'],
                                             frag['size']))
-
+            elif chunk.startStyle('DXJJCX+GillSans-SemiBold', 21.4740):
+                # such as "Monsters (B)"
+                if monster is not None:
+                    monsters.append(monster)
+                    monster = None
+                indent = ""
+                subcategory = None
             elif monster is not None:
                 pdent("Unknown chunk after {}: \"{}\""
                       "".format(prevStatName, chunk.text))
@@ -647,6 +754,7 @@ def processChunks(chunks):
                     pdent("    font: '{}' {}"
                           "".format(frag['fontname'], frag['size']))
                 prevStatName = None
+
             if chunk.text == "Ghost":
                 '''
                 This should never happen. It is the last creature in
@@ -683,11 +791,12 @@ def processChunks(chunks):
                       " \"# XP\" after # [CR] in \"{}\")"
                       "".format(XPs, parts[1], crxp))
                 raise ex
-            if pair[1] != 'XP':
+            if (pair[0] is None) or (pair[1] != 'XP'):
                 raise ValueError("A string in the format \"(# XP)\" was"
                                  " expected after # [CR] in Challenge,"
-                                 " but instead there was \"{}\"."
-                                 "".format(parts[1]))
+                                 " but instead there was \"{}\""
+                                 " resulting in {}"
+                                 "".format(parts[1], pair))
             monster['XP'] = pair[0]
         else:
             monster['CR'] = -1
@@ -706,8 +815,9 @@ def processChunks(chunks):
         # stored in the object.
     print("* wrote \"{}\"".format(jsonPath))
     tableHeaders = [NameHeader, "CR", "XP", "Languages", ContextHeader,
-                    SubCategoryHeader, "Armor Class", "Hit Points",
-                    "Saving Throws", "Speed", "Skills", "Senses"]
+                    SubCategoryHeader, "Armor Class", "pageN",
+                    "Hit Points", "Saving Throws", "Speed", "Skills",
+                    "Senses"]
     tableHeaders += statHeaders
     csvName = 'creatures.csv'
     csvPath = os.path.join(dataPath, csvName)
@@ -737,8 +847,9 @@ def main():
 
     chunks = None
     if os.path.isfile(chunksPath):
-        prerr("* The chunk list from \"{}\" was already created."
-              "".format(srcPath))
+        prerr("* The chunk list \"{}\" was already created,"
+              " so reading \"{}\" will be skipped if the list is ok."
+              "".format(chunksPath, srcPath))
         prerr("  * loading \"{}\"".format(chunksPath))
         try:
             with open(chunksPath, 'r') as ins:
@@ -752,6 +863,10 @@ def main():
             for i in range(len(chunks)):
                 chunk = chunks[i]
                 chunks[i] = dictToChunk(chunk)
+                if chunk['pageN'] != chunks[i].pageN:
+                    raise RuntimeError("dictToChunk lost pageN.")
+                if chunks[i].pageN is None:
+                    raise RuntimeError("dictToChunk received no pageN.")
     if chunks is None:
         from srd.pagechunker import generateChunks
         chunks = generateChunks(
@@ -763,6 +878,10 @@ def main():
         for i in range(len(chunks)):
             chunk = chunks[i]
             chunks[i] = chunkToDict(chunk)
+            if chunks[i]['pageN'] != chunks[i].pageN:
+                raise RuntimeError("chunkToDict lost pageN.")
+            if chunk.pageN is None:
+                raise RuntimeError("chunkToDict received no pageN.")
         # pre-save test:
         for chunk in chunks:
             print("* testing conversion of chunk {}"
@@ -779,6 +898,11 @@ def main():
             # It is a dict now whether saved or loaded due to use in
             # json save or load.
             chunks[i] = dictToChunk(chunk)
+            if chunk['pageN'] != chunks[i].pageN:
+                raise RuntimeError("dictToChunk lost pageN.")
+            if chunks[i].pageN is None:
+                raise RuntimeError("dictToChunk received no pageN.")
+
     prerr("* processing chunks...")
     processChunks(chunks)
     prerr("* done processing chunks.")
